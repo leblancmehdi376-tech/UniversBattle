@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { socket } from "../socket.js";
+import { createLobby, joinLobby } from "../api.js";
 import Avatar from "../components/Avatar.jsx";
 
 export default function Home({ auth, onError, onJoined }) {
@@ -9,25 +9,25 @@ export default function Home({ auth, onError, onJoined }) {
 
   const effectiveName = auth ? auth.username : name;
 
-  function createLobby() {
+  async function handleCreate() {
     if (!effectiveName.trim()) return onError("Entre un pseudo d'abord.");
-    socket.emit("lobby:create", { name: effectiveName, authToken: auth?.token }, (res) => {
-      if (res?.error) onError(res.error);
-      else onJoined(res.lobby, res.playerId, effectiveName.trim());
-    });
+    try {
+      const res = await createLobby({ name: effectiveName, authToken: auth?.token });
+      onJoined(res.lobby, res.playerId, effectiveName.trim());
+    } catch (err) {
+      onError(err.message);
+    }
   }
 
-  function joinLobby() {
+  async function handleJoin() {
     if (!effectiveName.trim()) return onError("Entre un pseudo d'abord.");
     if (!joinCode.trim()) return onError("Entre le code du lobby.");
-    socket.emit(
-      "lobby:join",
-      { code: joinCode, name: effectiveName, authToken: auth?.token },
-      (res) => {
-        if (res?.error) onError(res.error);
-        else onJoined(res.lobby, res.playerId, effectiveName.trim());
-      }
-    );
+    try {
+      const res = await joinLobby(joinCode, { name: effectiveName, authToken: auth?.token });
+      onJoined(res.lobby, res.playerId, effectiveName.trim());
+    } catch (err) {
+      onError(err.message);
+    }
   }
 
   return (
@@ -80,7 +80,7 @@ export default function Home({ auth, onError, onJoined }) {
       </div>
 
       {mode === "create" ? (
-        <button className="btn btn-primary" onClick={createLobby}>
+        <button className="btn btn-primary" onClick={handleCreate}>
           Créer la partie
         </button>
       ) : (
@@ -95,7 +95,7 @@ export default function Home({ auth, onError, onJoined }) {
               maxLength={5}
             />
           </div>
-          <button className="btn btn-primary" onClick={joinLobby}>
+          <button className="btn btn-primary" onClick={handleJoin}>
             Rejoindre
           </button>
         </>

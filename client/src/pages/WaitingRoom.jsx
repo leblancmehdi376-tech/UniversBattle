@@ -1,4 +1,4 @@
-import { socket } from "../socket.js";
+import { setCategory as apiSetCategory, setTournamentSize, startGame } from "../api.js";
 import Avatar from "../components/Avatar.jsx";
 
 const CATEGORIES = [
@@ -7,17 +7,34 @@ const CATEGORIES = [
   { id: "dessinanime", label: "Dessin animé", emoji: "🎨" },
 ];
 
-export default function WaitingRoom({ lobby, isHost }) {
-  function setCategory(category) {
-    socket.emit("lobby:setCategory", { code: lobby.code, category });
+const TOURNAMENT_SIZES = [16, 32, 64, 128];
+
+export default function WaitingRoom({ lobby, myId, isHost, applyLobby, onError }) {
+  async function setCategory(category) {
+    try {
+      const res = await apiSetCategory(lobby.code, myId, category);
+      applyLobby(res.lobby);
+    } catch (err) {
+      onError?.(err.message);
+    }
   }
 
-  function setPicksCount(count) {
-    socket.emit("lobby:setPicksCount", { code: lobby.code, count });
+  async function setSize(size) {
+    try {
+      const res = await setTournamentSize(lobby.code, myId, size);
+      applyLobby(res.lobby);
+    } catch (err) {
+      onError?.(err.message);
+    }
   }
 
-  function start() {
-    socket.emit("lobby:start", { code: lobby.code });
+  async function start() {
+    try {
+      const res = await startGame(lobby.code, myId);
+      applyLobby(res.lobby);
+    } catch (err) {
+      onError?.(err.message);
+    }
   }
 
   const canStart = isHost && lobby.category && lobby.players.length >= 2;
@@ -49,22 +66,26 @@ export default function WaitingRoom({ lobby, isHost }) {
         </p>
       )}
 
-      <h2 style={{ marginTop: 28 }}>Picks par joueur</h2>
+      <h2 style={{ marginTop: 28 }}>Taille du tournoi</h2>
       {isHost ? (
         <div className="row">
-          {[1, 2, 3, 4, 5].map((n) => (
+          {TOURNAMENT_SIZES.map((n) => (
             <button
               key={n}
-              className={`btn ${lobby.picksPerPlayer === n ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setPicksCount(n)}
+              className={`btn ${lobby.tournamentSize === n ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => setSize(n)}
             >
               {n}
             </button>
           ))}
         </div>
       ) : (
-        <p>{lobby.picksPerPlayer} favoris par joueur</p>
+        <p>Tournoi à {lobby.tournamentSize} participants</p>
       )}
+      <p style={{ marginTop: 10, fontSize: 13 }}>
+        ~{Math.ceil(lobby.tournamentSize / Math.max(lobby.players.length, 1))} favori(s) par joueur
+        pour compléter l'arbre.
+      </p>
 
       <h2 style={{ marginTop: 28 }}>
         Joueurs ({lobby.players.length}/10)

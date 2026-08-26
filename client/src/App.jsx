@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { socket } from "./socket.js";
+import { fetchLobby, leaveLobby } from "./api.js";
 import { saveSession, loadSession, clearSession } from "./session.js";
 import { loadAuth, saveAuth, clearAuth, fetchMe } from "./auth.js";
 import Home from "./pages/Home.jsx";
@@ -12,22 +12,24 @@ import Stage from "./components/Stage.jsx";
 import Background from "./components/Background.jsx";
 import Header from "./components/Header.jsx";
 
+const POLL_INTERVAL_MS = 1500;
+const MAX_CONSECUTIVE_ERRORS = 3;
+
 export default function App() {
+  const [activeSession, setActiveSession] = useState(() => loadSession());
   const [myId, setMyId] = useState(null);
   const [lobby, setLobby] = useState(null);
   const [error, setError] = useState(null);
-  const [status, setStatus] = useState("checking");
+  const [status, setStatus] = useState(() => (loadSession() ? "checking" : "idle"));
   const [auth, setAuth] = useState(null);
   const [showAccount, setShowAccount] = useState(false);
-  const attemptedReconnect = useRef(false);
 
+  // Les bannières d'erreur se referment toutes seules après quelques secondes.
   useEffect(() => {
-    function onLobbyUpdate(updated) {
-      setLobby(updated);
-    }
-    socket.on("lobby:update", onLobbyUpdate);
-    return () => socket.off("lobby:update", onLobbyUpdate);
-  }, []);
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 5000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   // Charge le compte (si un token valide existe) au démarrage
   useEffect(() => {
@@ -44,50 +46,73 @@ export default function App() {
       });
   }, []);
 
-  // Tentative de reconnexion automatique au chargement (refresh de page)
+  // Boucle de polling: sert à la fois la reprise au montage (refresh de page)
+  // et la synchronisation continue de l'état du lobby (remplace lobby:update).
+  // Le tout premier appel raté est fatal (session invalide -> retour à
+  // l'accueil), les suivants tolèrent jusqu'à MAX_CONSECUTIVE_ERRORS échecs
+  // avant de considérer la session perdue (absorbe les erreurs réseau ponctuelles).
   useEffect(() => {
-    if (attemptedReconnect.current) return;
-    attemptedReconnect.current = true;
-
-    const session = loadSession();
-    if (!session) {
+    if (!activeSession) {
       setStatus("idle");
       return;
     }
 
-    function tryReconnect() {
-      socket.emit(
-        "lobby:reconnect",
-        { code: session.code, playerId: session.playerId },
-        (res) => {
-          if (res?.error) {
-            clearSession();
-            setStatus("idle");
-          } else {
-            setMyId(session.playerId);
-            setLobby(res.lobby);
-            setStatus("idle");
-          }
+    let cancelled = false;
+    let timer = null;
+    let isFirst = true;
+    let errors = 0;
+
+    async function tick() {
+      try {
+        const res = await fetchLobby(activeSession.code, activeSession.playerId);
+        if (cancelled) return;
+        errors = 0;
+        isFirst = false;
+        setMyId(activeSession.playerId);
+        setLobby(res.lobby);
+        setStatus("idle");
+      } catch {
+        if (cancelled) return;
+        errors += 1;
+        if (isFirst || errors >= MAX_CONSECUTIVE_ERRORS) {
+          clearSession();
+          setActiveSession(null);
+          setMyId(null);
+          setLobby(null);
+          setStatus("idle");
+          return;
         }
-      );
+      }
+      if (!cancelled) {
+        timer = setTimeout(tick, POLL_INTERVAL_MS);
+      }
     }
 
-    if (socket.connected) tryReconnect();
-    else socket.once("connect", tryReconnect);
-  }, []);
+    tick();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activeSession]);
 
   function handleJoined(joinedLobby, playerId, name) {
     saveSession({ code: joinedLobby.code, playerId, name });
+    setActiveSession({ code: joinedLobby.code, playerId, name });
     setMyId(playerId);
     setLobby(joinedLobby);
   }
 
-  function handleLeave() {
-    const session = loadSession();
-    if (session) {
-      socket.emit("lobby:leave", { code: session.code, playerId: session.playerId });
+  async function handleLeave() {
+    if (activeSession) {
+      try {
+        await leaveLobby(activeSession.code, activeSession.playerId);
+      } catch {
+        // départ volontaire: on quitte localement même si la requête échoue
+      }
     }
     clearSession();
+    setActiveSession(null);
     setMyId(null);
     setLobby(null);
   }
@@ -116,13 +141,45 @@ export default function App() {
     }
     switch (lobby.phase) {
       case "waiting":
-        return <WaitingRoom lobby={lobby} isHost={isHost} onError={setError} />;
+        return (
+          <WaitingRoom
+            lobby={lobby}
+            myId={myId}
+            isHost={isHost}
+            onError={setError}
+            applyLobby={setLobby}
+          />
+        );
       case "picking":
-        return <Picking lobby={lobby} myId={myId} onError={setError} />;
+        return (
+          <Picking
+            lobby={lobby}
+            myId={myId}
+            onError={setError}
+            applyLobby={setLobby}
+          />
+        );
       case "tournament":
-        return <Tournament lobby={lobby} myId={myId} />;
+        return (
+          <Tournament
+            lobby={lobby}
+            myId={myId}
+            isHost={isHost}
+            applyLobby={setLobby}
+            onError={setError}
+          />
+        );
       case "finished":
-        return <Winner lobby={lobby} isHost={isHost} onLeave={handleLeave} />;
+        return (
+          <Winner
+            lobby={lobby}
+            myId={myId}
+            isHost={isHost}
+            onLeave={handleLeave}
+            applyLobby={setLobby}
+            onError={setError}
+          />
+        );
       default:
         return null;
     }
@@ -131,7 +188,12 @@ export default function App() {
   return (
     <div className="app-shell">
       <Background />
-      <Header auth={auth} onOpenAccount={() => setShowAccount((v) => !v)} />
+      <Header
+        auth={auth}
+        onOpenAccount={() => setShowAccount((v) => !v)}
+        showLeave={Boolean(lobby) && lobby.phase !== "finished"}
+        onLeave={handleLeave}
+      />
       {error && <div className="error-banner">{error}</div>}
       <Stage stageKey={showAccount ? "account" : lobby ? lobby.phase : "home"}>
         {renderStage()}

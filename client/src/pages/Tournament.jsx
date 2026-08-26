@@ -1,38 +1,22 @@
-import { socket } from "../socket.js";
+import { useState } from "react";
+import { vote as apiVote, advanceRound } from "../api.js";
 import Avatar from "../components/Avatar.jsx";
+import BracketTree from "../components/BracketTree.jsx";
 
-function Contender({ item, match, side, myId, totalPlayers }) {
+function Contender({ item, side, isWinner, isLoser, iVotedThis, hasVoted, isDecided, voters, onVote }) {
   if (!item) {
     return <div className="contender-bye">Passe automatiquement</div>;
   }
-
-  const myVote = match.votes[myId];
-  const hasVoted = Boolean(myVote);
-  const isDecided = Boolean(match.winner);
-  const isWinner = isDecided && match.winner.id === item.id;
-  const isLoser = isDecided && match.winner.id !== item.id;
-  const iVotedThis = myVote === side;
 
   const classes = ["contender"];
   if (iVotedThis) classes.push("voted-mine");
   if (isWinner) classes.push("is-winner");
   if (isLoser) classes.push("is-loser");
 
-  function vote() {
-    if (hasVoted || isDecided) return;
-    socket.emit("tournament:vote", {
-      code: match._code,
-      matchId: match.id,
-      choice: side,
-    });
-  }
-
-  const votesForThisMatch = Object.keys(match.votes).length;
-
   return (
     <button
       className={classes.join(" ")}
-      onClick={vote}
+      onClick={() => onVote(side)}
       disabled={hasVoted || isDecided}
     >
       <img src={item.image} alt={item.name} />
@@ -42,10 +26,11 @@ function Contender({ item, match, side, myId, totalPlayers }) {
           <Avatar name={item.ownerName} avatarUrl={item.ownerAvatarUrl} size={16} />
           <span>choisi par {item.ownerName}</span>
         </div>
-        {!isDecided && (
-          <div className="contender-owner">
-            {iVotedThis ? "✓ Ton vote — " : ""}
-            {votesForThisMatch}/{totalPlayers} votes
+        {!isDecided && voters.length > 0 && (
+          <div className="contender-voters">
+            {voters.map((v) => (
+              <Avatar key={v.id} name={v.name} avatarUrl={v.avatarUrl} size={36} />
+            ))}
           </div>
         )}
       </div>
@@ -53,55 +38,146 @@ function Contender({ item, match, side, myId, totalPlayers }) {
   );
 }
 
-export default function Tournament({ lobby, myId }) {
+export default function Tournament({ lobby, myId, isHost, applyLobby, onError }) {
   const { bracket, code } = lobby;
-  const totalPlayers = lobby.players.length;
+  const realMatches = bracket.matches.filter((m) => m.a && m.b);
+  const currentMatch = realMatches.find((m) => !m.winner) ?? null;
+  // Le gagnant du duel précédent reste affiché tant que l'hôte n'a pas
+  // confirmé (plus de minuteur auto) - dérivé du bracket, donc synchronisé
+  // pour tout le monde sans logique de timing côté client.
+  const pendingMatch = bracket.pendingReveal
+    ? realMatches.find((m) => m.id === bracket.pendingReveal) ?? null
+    : null;
+  const shownMatch = pendingMatch || currentMatch;
+  const revealing = Boolean(pendingMatch);
+  const doneCount = realMatches.filter((m) => m.winner).length;
 
-  // Trie: duels en attente de vote d'abord, terminés ensuite
-  const matches = [...bracket.matches].sort((a, b) => {
-    if (a.winner && !b.winner) return 1;
-    if (!a.winner && b.winner) return -1;
-    return 0;
-  });
+  const [showTree, setShowTree] = useState(false);
+  const [voting, setVoting] = useState(false); // anti double-clic pendant la requête
+  const [advancing, setAdvancing] = useState(false);
+
+  async function castVote(side) {
+    if (voting || !shownMatch) return;
+    setVoting(true);
+    try {
+      const res = await apiVote(code, myId, shownMatch.id, side);
+      applyLobby(res.lobby);
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setVoting(false);
+    }
+  }
+
+  async function handleAdvance() {
+    if (advancing) return;
+    setAdvancing(true);
+    try {
+      const res = await advanceRound(code, myId);
+      applyLobby(res.lobby);
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
+  const rounds = [...bracket.history, { round: bracket.round, matches: bracket.matches }];
 
   return (
-    <div className="panel">
-      <div className="round-title">
-        <h2>Round {bracket.round} — {bracket.matches.length} duel(s)</h2>
-      </div>
-      {bracket.totalRounds > 0 && (
-        <div className="progress-track" style={{ marginBottom: 24 }}>
+    <div className={`tournament-layout${showTree ? " tree-open" : ""}`}>
+      <div className="tournament-main panel">
+        <div className="round-title">
+          <h2>Round {bracket.round} / {bracket.totalRounds}</h2>
+          <button
+            type="button"
+            className="btn btn-ghost btn-tree-toggle"
+            onClick={() => setShowTree((v) => !v)}
+          >
+            {showTree ? "Masquer l'arbre" : "Voir l'arbre du tournoi"}
+          </button>
+        </div>
+        <div className="progress-track" style={{ marginBottom: 20 }}>
           <div
             className="progress-fill gold"
-            style={{ width: `${(bracket.round / bracket.totalRounds) * 100}%` }}
+            style={{ width: `${realMatches.length ? (doneCount / realMatches.length) * 100 : 0}%` }}
           />
         </div>
-      )}
+        <p style={{ marginTop: -10, marginBottom: 20 }}>
+          Duel {Math.min(doneCount + 1, realMatches.length)}/{realMatches.length} — toute la table vote
+          sur le même duel
+        </p>
 
-      {matches.map((match) => {
-        const enriched = { ...match, _code: code };
-        return (
-          <div className="duel-card" key={match.id}>
+        {shownMatch ? (
+          <div key={shownMatch.id} className={`duel-card${revealing ? " duel-reveal" : ""}`}>
             <div className="duel-vs">VS</div>
             <div className="duel-contenders">
-              <Contender
-                item={match.a}
-                match={enriched}
-                side="a"
-                myId={myId}
-                totalPlayers={totalPlayers}
-              />
-              <Contender
-                item={match.b}
-                match={enriched}
-                side="b"
-                myId={myId}
-                totalPlayers={totalPlayers}
-              />
+              {["a", "b"].map((side) => {
+                const item = shownMatch[side];
+                const isDecided = Boolean(shownMatch.winner);
+                const isWinner = isDecided && item && shownMatch.winner.id === item.id;
+                const isLoser = isDecided && item && shownMatch.winner.id !== item.id;
+                const myVote = shownMatch.votes[myId];
+                const voters = lobby.players.filter((p) => shownMatch.votes[p.id] === side);
+                return (
+                  <Contender
+                    key={side}
+                    item={item}
+                    side={side}
+                    isWinner={isWinner}
+                    isLoser={isLoser}
+                    iVotedThis={myVote === side}
+                    hasVoted={Boolean(myVote) || revealing || voting}
+                    isDecided={isDecided}
+                    voters={voters}
+                    onVote={castVote}
+                  />
+                );
+              })}
             </div>
           </div>
-        );
-      })}
+        ) : (
+          <div className="waiting-panel">
+            <p>En attente du prochain duel…</p>
+          </div>
+        )}
+
+        {revealing && shownMatch?.winner && (
+          <div className="winner-popup">
+            <div className="winner-popup-card">
+              {shownMatch.tieBreak && (
+                <div className="winner-popup-tie">
+                  <span className="coin">🪙</span> Égalité — pile ou face !
+                </div>
+              )}
+              <img src={shownMatch.winner.image} alt={shownMatch.winner.name} />
+              <div className="winner-popup-trophy" aria-hidden="true">🏆</div>
+              <h3 className="winner-popup-name">{shownMatch.winner.name}</h3>
+              <p className="winner-popup-sub">remporte ce duel !</p>
+              {isHost ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ marginTop: 16 }}
+                  disabled={advancing}
+                  onClick={handleAdvance}
+                >
+                  Duel suivant
+                </button>
+              ) : (
+                <p className="winner-popup-wait">En attente que l'hôte continue…</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {showTree && (
+        <div className="tournament-sidebar">
+          <h3>Arbre du tournoi</h3>
+          <BracketTree rounds={rounds} currentMatchId={shownMatch?.id ?? null} />
+        </div>
+      )}
     </div>
   );
 }

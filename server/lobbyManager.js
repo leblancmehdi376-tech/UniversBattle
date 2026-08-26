@@ -1,23 +1,42 @@
 import { customAlphabet } from "nanoid";
+import * as store from "./store.js";
 
 // Code lobby lisible: 5 lettres majuscules, sans caractères ambigus
 const nanoid = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 5);
 
-// Stockage en mémoire. Pour passer à Redis plus tard, il suffit de
-// remplacer cette Map par des appels à un client Redis avec la même interface.
-const lobbies = new Map();
-
-// playerId (stable, stocké côté client en localStorage) est distinct du
-// socket.id (qui change à chaque connexion/refresh). Toute la logique de jeu
-// (hostId, picks, votes, ownerId) référence playerId, jamais socket.id.
+// playerId (stable, stocké côté client en localStorage) est distinct de toute
+// connexion transport (il n'y a plus de socket.id sous polling HTTP). Toute la
+// logique de jeu (hostId, picks, votes, ownerId) référence playerId.
 const playerIdAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
 const genPlayerId = customAlphabet(playerIdAlphabet, 16);
 
-export function createLobby(hostSocketId, hostName, avatarUrl = null) {
+// Un joueur est considéré "connecté" s'il a été vu (poll ou action) il y a
+// moins de CONNECTED_TIMEOUT_MS. Remplace l'ancien événement "disconnect".
+const CONNECTED_TIMEOUT_MS = 5000;
+
+export const VALID_TOURNAMENT_SIZES = [16, 32, 64, 128];
+
+/**
+ * Répartit `tournamentSize` picks entre `numPlayers` joueurs pour tomber pile
+ * sur le total (les premiers joueurs prennent le reste de la division, +1
+ * chacun) - ainsi le tournoi tombe toujours sur une puissance de 2 exacte,
+ * sans bye, tant que personne ne quitte en cours de picking.
+ */
+export function computePickQuotas(numPlayers, tournamentSize) {
+  const base = Math.floor(tournamentSize / numPlayers);
+  const remainder = tournamentSize % numPlayers;
+  return Array.from({ length: numPlayers }, (_, i) => base + (i < remainder ? 1 : 0));
+}
+
+function lobbyKey(code) {
+  return `lobby:${code}`;
+}
+
+export async function createLobby(hostName, avatarUrl = null) {
   let code;
   do {
     code = nanoid();
-  } while (lobbies.has(code));
+  } while (await store.get(lobbyKey(code)));
 
   const hostPlayerId = genPlayerId();
 
@@ -27,35 +46,39 @@ export function createLobby(hostSocketId, hostName, avatarUrl = null) {
     players: [
       {
         id: hostPlayerId,
-        socketId: hostSocketId,
         name: hostName,
         avatarUrl,
         picks: [],
         ready: false,
-        connected: true,
+        pickQuota: null,
+        lastSeenAt: Date.now(),
       },
     ],
     category: null, // 'anime' | 'jeuxvideo' | 'dessinanime'
-    picksPerPlayer: 3,
+    tournamentSize: 16, // 16 | 32 | 64 | 128 - taille totale du tournoi
     phase: "waiting", // waiting -> picking -> tournament -> finished
     bracket: null,
     createdAt: Date.now(),
   };
 
-  lobbies.set(code, lobby);
+  await store.set(lobbyKey(code), lobby);
   return { lobby, playerId: hostPlayerId };
 }
 
-export function getLobby(code) {
-  return lobbies.get(code);
+export async function getLobby(code) {
+  return store.get(lobbyKey(code));
 }
 
-export function deleteLobby(code) {
-  lobbies.delete(code);
+export async function saveLobby(lobby) {
+  await store.set(lobbyKey(lobby.code), lobby);
 }
 
-export function joinLobby(code, socketId, playerName, avatarUrl = null) {
-  const lobby = lobbies.get(code);
+export async function deleteLobby(code) {
+  await store.del(lobbyKey(code));
+}
+
+export async function joinLobby(code, playerName, avatarUrl = null) {
+  const lobby = await store.get(lobbyKey(code));
   if (!lobby) return { error: "Lobby introuvable." };
   if (lobby.phase !== "waiting") return { error: "La partie a déjà commencé." };
   if (lobby.players.length >= 10) return { error: "Le lobby est plein (10 max)." };
@@ -66,56 +89,59 @@ export function joinLobby(code, socketId, playerName, avatarUrl = null) {
   const playerId = genPlayerId();
   lobby.players.push({
     id: playerId,
-    socketId,
     name: playerName,
     avatarUrl,
     picks: [],
     ready: false,
-    connected: true,
+    pickQuota: null,
+    lastSeenAt: Date.now(),
   });
 
+  await store.set(lobbyKey(code), lobby);
   return { lobby, playerId };
 }
 
-/** Reconnexion: réassocie un playerId existant à un nouveau socket.id */
-export function reconnectPlayer(code, playerId, socketId) {
-  const lobby = lobbies.get(code);
+/** Vérifie qu'un playerId existe bien dans ce lobby et rafraîchit son heartbeat. */
+export async function getLobbyForPlayer(code, playerId) {
+  const lobby = await store.get(lobbyKey(code));
   if (!lobby) return { error: "Ce lobby n'existe plus." };
   const player = lobby.players.find((p) => p.id === playerId);
   if (!player) return { error: "Session introuvable dans ce lobby." };
-  player.socketId = socketId;
-  player.connected = true;
+  player.lastSeenAt = Date.now();
+  await store.set(lobbyKey(code), lobby);
   return { lobby, playerId };
 }
 
-/** Marque un joueur déconnecté sans le retirer (il peut revenir via reconnect) */
-export function markDisconnected(socketId) {
-  for (const lobby of lobbies.values()) {
-    const player = lobby.players.find((p) => p.socketId === socketId);
-    if (player) {
-      player.connected = false;
-      return lobby;
-    }
-  }
-  return null;
+/** Met à jour le heartbeat d'un joueur sans persister (l'appelant persiste après ses propres mutations). */
+export function touchPlayer(lobby, playerId) {
+  const player = lobby.players.find((p) => p.id === playerId);
+  if (player) player.lastSeenAt = Date.now();
+  return player;
 }
 
-export function removePlayer(code, playerId) {
-  const lobby = lobbies.get(code);
+export async function removePlayer(code, playerId) {
+  const lobby = await store.get(lobbyKey(code));
   if (!lobby) return null;
   lobby.players = lobby.players.filter((p) => p.id !== playerId);
   if (lobby.players.length === 0) {
-    deleteLobby(code);
+    await deleteLobby(code);
     return null;
   }
   if (lobby.hostId === playerId) {
     lobby.hostId = lobby.players[0].id; // transfert d'hôte
   }
+  await store.set(lobbyKey(code), lobby);
   return lobby;
 }
 
-export function listPublicLobby(lobby) {
-  // Vue "publique" envoyée aux clients (pas besoin de cacher grand chose ici,
-  // mais on garde ce point d'entrée pour filtrer plus tard si besoin)
-  return lobby;
+// Vue envoyée aux clients: on ne renvoie jamais lastSeenAt (info interne),
+// et "connected" est calculé à la volée à partir du heartbeat.
+export function sanitizeLobby(lobby) {
+  return {
+    ...lobby,
+    players: lobby.players.map(({ lastSeenAt, ...rest }) => ({
+      ...rest,
+      connected: Date.now() - lastSeenAt < CONNECTED_TIMEOUT_MS,
+    })),
+  };
 }

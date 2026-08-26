@@ -1,27 +1,17 @@
-import fs from "fs";
-import path from "path";
 import crypto from "crypto";
-import { fileURLToPath } from "url";
+import * as store from "./store.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, "data");
-const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
+// Comptes et sessions passent par le même store clé/valeur que les lobbies
+// (Map en mémoire en local, Vercel KV en prod). En local, ça signifie que les
+// comptes ne survivent plus à un redémarrage du serveur (comme les lobbies
+// aujourd'hui) - avant, ils étaient persistés dans data/accounts.json.
 
-// Comptes persistés dans un simple fichier JSON (suffisant pour un petit
-// projet perso). Pour passer à l'échelle, remplacer par une vraie base
-// (Postgres, etc.) en gardant la même interface (register/login/...).
-function ensureStore() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(ACCOUNTS_FILE)) fs.writeFileSync(ACCOUNTS_FILE, "{}");
+function accountKey(usernameLower) {
+  return `account:${usernameLower}`;
 }
 
-function readAccounts() {
-  ensureStore();
-  return JSON.parse(fs.readFileSync(ACCOUNTS_FILE, "utf-8"));
-}
-
-function writeAccounts(accounts) {
-  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+function sessionKey(token) {
+  return `session:${token}`;
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
@@ -37,15 +27,11 @@ function verifyPassword(password, stored) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// Sessions en mémoire: token -> clé de compte. Un redémarrage du serveur
-// invalide les sessions actives (l'utilisateur devra se reconnecter).
-const sessions = new Map();
-
 function publicAccount(account) {
   return { username: account.username, avatarUrl: account.avatarUrl || null };
 }
 
-export function register(username, password) {
+export async function register(username, password) {
   username = (username || "").trim();
   password = password || "";
   if (username.length < 3 || username.length > 20) {
@@ -55,56 +41,53 @@ export function register(username, password) {
     return { error: "Le mot de passe doit faire au moins 4 caractères." };
   }
 
-  const accounts = readAccounts();
   const key = username.toLowerCase();
-  if (accounts[key]) {
+  if (await store.get(accountKey(key))) {
     return { error: "Ce pseudo est déjà pris." };
   }
 
-  accounts[key] = {
+  const account = {
     username,
     passwordHash: hashPassword(password),
     avatarUrl: null,
   };
-  writeAccounts(accounts);
+  await store.set(accountKey(key), account);
 
   const token = crypto.randomBytes(24).toString("hex");
-  sessions.set(token, key);
-  return { token, account: publicAccount(accounts[key]) };
+  await store.set(sessionKey(token), key);
+  return { token, account: publicAccount(account) };
 }
 
-export function login(username, password) {
-  const accounts = readAccounts();
+export async function login(username, password) {
   const key = (username || "").trim().toLowerCase();
-  const account = accounts[key];
+  const account = await store.get(accountKey(key));
   if (!account || !verifyPassword(password || "", account.passwordHash)) {
     return { error: "Pseudo ou mot de passe incorrect." };
   }
   const token = crypto.randomBytes(24).toString("hex");
-  sessions.set(token, key);
+  await store.set(sessionKey(token), key);
   return { token, account: publicAccount(account) };
 }
 
-export function logout(token) {
-  sessions.delete(token);
+export async function logout(token) {
+  await store.del(sessionKey(token));
 }
 
-export function getAccountByToken(token) {
+export async function getAccountByToken(token) {
   if (!token) return null;
-  const key = sessions.get(token);
+  const key = await store.get(sessionKey(token));
   if (!key) return null;
-  const accounts = readAccounts();
-  const account = accounts[key];
+  const account = await store.get(accountKey(key));
   return account ? publicAccount(account) : null;
 }
 
-export function setAvatar(token, avatarUrl) {
-  const key = sessions.get(token);
+export async function setAvatar(token, avatarUrl) {
+  const key = await store.get(sessionKey(token));
   if (!key) return { error: "Session invalide, reconnecte-toi." };
-  const accounts = readAccounts();
-  if (!accounts[key]) return { error: "Compte introuvable." };
-  const previous = accounts[key].avatarUrl;
-  accounts[key].avatarUrl = avatarUrl;
-  writeAccounts(accounts);
-  return { account: publicAccount(accounts[key]), previousAvatarUrl: previous };
+  const account = await store.get(accountKey(key));
+  if (!account) return { error: "Compte introuvable." };
+  const previous = account.avatarUrl;
+  account.avatarUrl = avatarUrl;
+  await store.set(accountKey(key), account);
+  return { account: publicAccount(account), previousAvatarUrl: previous };
 }

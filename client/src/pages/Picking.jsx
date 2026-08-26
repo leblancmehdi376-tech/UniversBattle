@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { socket } from "../socket.js";
+import { searchItems, submitPicks } from "../api.js";
 
-export default function Picking({ lobby, myId, onError }) {
+export default function Picking({ lobby, myId, onError, applyLobby }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [picks, setPicks] = useState([]);
@@ -9,7 +9,7 @@ export default function Picking({ lobby, myId, onError }) {
   const debounceRef = useRef(null);
 
   const me = lobby.players.find((p) => p.id === myId);
-  const needed = lobby.picksPerPlayer;
+  const needed = me?.pickQuota ?? 0;
   const submitted = me?.ready;
 
   useEffect(() => {
@@ -18,17 +18,17 @@ export default function Picking({ lobby, myId, onError }) {
       setResults([]);
       return;
     }
-    debounceRef.current = setTimeout(() => {
+    debounceRef.current = setTimeout(async () => {
       setSearching(true);
-      socket.emit("search:items", { code: lobby.code, query }, (res) => {
+      try {
+        const res = await searchItems(lobby.code, query);
+        setResults(res.results || []);
+      } catch (err) {
+        onError(err.message);
+        setResults([]);
+      } finally {
         setSearching(false);
-        if (res?.error) {
-          onError(res.error);
-          setResults([]);
-        } else {
-          setResults(res.results || []);
-        }
-      });
+      }
     }, 400);
     return () => clearTimeout(debounceRef.current);
   }, [query, lobby.code, onError]);
@@ -43,12 +43,22 @@ export default function Picking({ lobby, myId, onError }) {
     });
   }
 
-  function submit() {
+  function removePickAt(index) {
+    if (submitted) return;
+    setPicks((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function submit() {
     if (picks.length !== needed) {
       onError(`Choisis exactement ${needed} favori(s) avant de valider.`);
       return;
     }
-    socket.emit("player:submitPicks", { code: lobby.code, items: picks });
+    try {
+      const res = await submitPicks(lobby.code, myId, picks);
+      applyLobby(res.lobby);
+    } catch (err) {
+      onError(err.message);
+    }
   }
 
   const readyCount = lobby.players.filter((p) => p.ready).length;
@@ -67,11 +77,22 @@ export default function Picking({ lobby, myId, onError }) {
       </div>
 
       <div className="picks-tray">
-        {Array.from({ length: needed }).map((_, i) => (
-          <div className="pick-slot" key={i}>
-            {picks[i] && <img src={picks[i].image} alt={picks[i].name} />}
-          </div>
-        ))}
+        {Array.from({ length: needed }).map((_, i) =>
+          picks[i] ? (
+            <button
+              key={i}
+              type="button"
+              className="pick-slot pick-slot-filled"
+              onClick={() => removePickAt(i)}
+              title="Retirer ce favori"
+            >
+              <img src={picks[i].image} alt={picks[i].name} />
+              <span className="pick-slot-remove">✕</span>
+            </button>
+          ) : (
+            <div className="pick-slot" key={i} />
+          )
+        )}
       </div>
 
       {submitted ? (

@@ -1,6 +1,6 @@
 import Avatar from "./Avatar.jsx";
 
-export default function Header({ auth, onOpenAccount }) {
+export default function Header({ auth, onOpenAccount, showLeave, onLeave }) {
   return (
     <header className="site-header">
       <div className="brand">
@@ -8,16 +8,23 @@ export default function Header({ auth, onOpenAccount }) {
         <span className="brand-tag">Le tournoi de tes goûts</span>
       </div>
 
-      <button className="account-chip" onClick={onOpenAccount}>
-        {auth ? (
-          <>
-            <Avatar name={auth.username} avatarUrl={auth.avatarUrl} size={30} />
-            <span>{auth.username}</span>
-          </>
-        ) : (
-          <span>Connexion</span>
+      <div className="row" style={{ marginBottom: 0 }}>
+        {showLeave && (
+          <button className="btn btn-ghost" onClick={onLeave}>
+            Quitter
+          </button>
         )}
-      </button>
+        <button className="account-chip" onClick={onOpenAccount}>
+          {auth ? (
+            <>
+              <Avatar name={auth.username} avatarUrl={auth.avatarUrl} size={30} />
+              <span>{auth.username}</span>
+            </>
+          ) : (
+            <span>Connexion</span>
+          )}
+        </button>
+      </div>
     </header>
   );
 }

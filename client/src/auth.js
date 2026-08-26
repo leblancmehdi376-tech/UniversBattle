@@ -1,4 +1,4 @@
-import { SERVER_URL } from "./socket.js";
+import { SERVER_URL } from "./api.js";
 
 const AUTH_KEY = "universebattle_auth";
 
@@ -66,7 +66,9 @@ export function uploadAvatar(token, file) {
   });
 }
 
-/** Construit l'URL complète d'un avatar (le serveur ne renvoie qu'un chemin relatif) */
+/** Construit l'URL complète d'un avatar (relative en local, absolue via Vercel Blob en prod) */
 export function avatarFullUrl(avatarUrl) {
-  return avatarUrl ? `${SERVER_URL}${avatarUrl}` : null;
+  if (!avatarUrl) return null;
+  if (/^https?:\/\//i.test(avatarUrl)) return avatarUrl;
+  return `${SERVER_URL}${avatarUrl}`;
 }
