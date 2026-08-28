@@ -1,6 +1,6 @@
 import Avatar from "./Avatar.jsx";
 
-export default function Header({ auth, onOpenAccount, showLeave, onLeave }) {
+export default function Header({ auth, onOpenAccount, showLeave, onLeave, theme, onToggleTheme }) {
   return (
     <header className="site-header">
       <div className="brand">
@@ -9,6 +9,13 @@ export default function Header({ auth, onOpenAccount, showLeave, onLeave }) {
       </div>
 
       <div className="row" style={{ marginBottom: 0 }}>
+        <button
+          className="btn btn-ghost theme-toggle"
+          onClick={onToggleTheme}
+          title={theme === "gold" ? "Thème violet & or" : "Thème noir & or"}
+        >
+          {theme === "gold" ? "✨ Violet & or" : "🖤 Noir & or"}
+        </button>
         {showLeave && (
           <button className="btn btn-ghost" onClick={onLeave}>
             Quitter

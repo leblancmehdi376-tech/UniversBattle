@@ -14,6 +14,7 @@ import Header from "./components/Header.jsx";
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_CONSECUTIVE_ERRORS = 3;
+const THEME_KEY = "universebattle_theme";
 
 export default function App() {
   const [activeSession, setActiveSession] = useState(() => loadSession());
@@ -23,6 +24,24 @@ export default function App() {
   const [status, setStatus] = useState(() => (loadSession() ? "checking" : "idle"));
   const [auth, setAuth] = useState(null);
   const [showAccount, setShowAccount] = useState(false);
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem(THEME_KEY) || "default";
+    } catch {
+      return "default";
+    }
+  });
+
+  // Applique le thème sur <html> (les variables CSS du thème sont définies
+  // via [data-theme="gold"] sur :root) et le retient pour la prochaine visite.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // localStorage indisponible - tant pis, le thème ne sera pas retenu
+    }
+  }, [theme]);
 
   // Les bannières d'erreur se referment toutes seules après quelques secondes.
   useEffect(() => {
@@ -193,6 +212,8 @@ export default function App() {
         onOpenAccount={() => setShowAccount((v) => !v)}
         showLeave={Boolean(lobby) && lobby.phase !== "finished"}
         onLeave={handleLeave}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "gold" ? "default" : "gold"))}
       />
       {error && <div className="error-banner">{error}</div>}
       <Stage stageKey={showAccount ? "account" : lobby ? lobby.phase : "home"}>

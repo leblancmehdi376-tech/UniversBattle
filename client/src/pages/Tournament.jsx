@@ -19,7 +19,7 @@ function Contender({ item, side, isWinner, isLoser, iVotedThis, hasVoted, isDeci
       onClick={() => onVote(side)}
       disabled={hasVoted || isDecided}
     >
-      <img src={item.image} alt={item.name} />
+      <img className="contender-fg" src={item.image} alt={item.name} />
       <div className="contender-label">
         <div className="contender-name">{item.name}</div>
         <div className="contender-owner">
@@ -143,30 +143,38 @@ export default function Tournament({ lobby, myId, isHost, applyLobby, onError })
         )}
 
         {revealing && shownMatch?.winner && (
-          <div className="winner-popup">
+          <div className="winner-popup" key={`popup-${shownMatch.id}`}>
             <div className="winner-popup-card">
               {shownMatch.tieBreak && (
-                <div className="winner-popup-tie">
-                  <span className="coin">🪙</span> Égalité — pile ou face !
+                <div className="tie-flip">
+                  <div className="tie-coin">
+                    <span className="tie-coin-face">🪙</span>
+                  </div>
+                  <p className="tie-flip-label">Égalité — pile ou face !</p>
                 </div>
               )}
-              <img src={shownMatch.winner.image} alt={shownMatch.winner.name} />
-              <div className="winner-popup-trophy" aria-hidden="true">🏆</div>
-              <h3 className="winner-popup-name">{shownMatch.winner.name}</h3>
-              <p className="winner-popup-sub">remporte ce duel !</p>
-              {isHost ? (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ marginTop: 16 }}
-                  disabled={advancing}
-                  onClick={handleAdvance}
-                >
-                  Duel suivant
-                </button>
-              ) : (
-                <p className="winner-popup-wait">En attente que l'hôte continue…</p>
-              )}
+              <div className="winner-popup-body">
+                <div className="winner-popup-media">
+                  <img className="winner-popup-fg" src={shownMatch.winner.image} alt={shownMatch.winner.name} />
+                </div>
+                <div className="winner-popup-info">
+                  <div className="winner-popup-trophy" aria-hidden="true">🏆</div>
+                  <h3 className="winner-popup-name">{shownMatch.winner.name}</h3>
+                  <p className="winner-popup-sub">remporte ce duel !</p>
+                  {isHost ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary winner-popup-advance"
+                      disabled={advancing}
+                      onClick={handleAdvance}
+                    >
+                      Duel suivant
+                    </button>
+                  ) : (
+                    <p className="winner-popup-wait">En attente que l'hôte continue…</p>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}

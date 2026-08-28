@@ -6,11 +6,12 @@ import fetch from "node-fetch";
 // attendre l'utilisateur indéfiniment ni masquer une vraie panne prolongée.
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
 
-export async function fetchWithRetry(url, { retries = 1, delayMs = 500 } = {}) {
+export async function fetchWithRetry(url, options = {}) {
+  const { retries = 1, delayMs = 500, ...fetchOptions } = options;
   let lastRes;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      lastRes = await fetch(url);
+      lastRes = await fetch(url, fetchOptions);
       if (lastRes.ok || !RETRYABLE_STATUSES.has(lastRes.status)) return lastRes;
     } catch (err) {
       if (attempt === retries) throw err;

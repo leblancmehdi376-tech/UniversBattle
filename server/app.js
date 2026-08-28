@@ -23,6 +23,7 @@ import {
 import { searchAnime } from "./apis/anime.js";
 import { searchGames } from "./apis/games.js";
 import { searchCartoons } from "./apis/cartoons.js";
+import { translateToEnglish } from "./apis/translate.js";
 import { register, login, logout, getAccountByToken, setAvatar } from "./accounts.js";
 import { saveAvatar, deleteAvatar, UPLOAD_DIR } from "./avatarStore.js";
 
@@ -257,7 +258,19 @@ app.get("/api/lobby/:code/search", async (req, res) => {
     return res.status(400).json({ error: "Lobby ou catégorie invalide." });
   }
   try {
-    const results = await searchByCategory(lobby.category, req.query.query);
+    const query = req.query.query;
+    let results = await searchByCategory(lobby.category, query);
+
+    // Aucune des API utilisées n'indexe les titres français: si la recherche
+    // telle quelle ne donne rien, on traduit la requête en anglais et on
+    // retente une fois (ex: "l'attaque des titans" -> "Attack on Titan").
+    if (results.length === 0) {
+      const translated = await translateToEnglish(query);
+      if (translated) {
+        results = await searchByCategory(lobby.category, translated);
+      }
+    }
+
     const taken = takenItemIds(lobby);
     res.json({ results: results.filter((item) => !taken.has(item.id)) });
   } catch (err) {
